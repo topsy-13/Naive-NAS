@@ -23,7 +23,7 @@ def set_seed(seed=13):
 
 
 # Definir una arquitectura de red flexible 
-class DynamicNN(nn.Module):
+class DynamicNN(nn.Module): # MLP
     def __init__(self, input_size, output_size, 
                  hidden_layers, 
                  activation_fn, dropout_rate,
@@ -304,7 +304,7 @@ class Generation():
         n_worst_individuals = max(1, int(self.n_individuals * percentile_drop / 100))  # Ensure at least 1
 
         # Sort individuals by validation loss in descending order (higher loss is worse)
-        sorted_generation = sorted(self.generation.items(), key=lambda x: x[1]["val_loss"], reverse=True)
+        sorted_generation = sorted(self.generation.items(), key=lambda x: x[1]["val_loss"], reverse=True) #? Should the criterion be val_loss or val_acc?
 
         # Extract the keys of the worst individuals
         self.worst_individuals = [key for key, _ in sorted_generation[:n_worst_individuals]]
@@ -401,7 +401,7 @@ def create_dataloaders(X, y,
 def run_generation(generation, 
                    X_train, y_train, X_val, y_val,
                    num_epochs=1,
-                   percentile_drop=15):
+                   percentile_drop=25):
     
     # Generation is trained, and dropped
     generation.train_generation(X_train, y_train, num_epochs=num_epochs)
