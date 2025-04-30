@@ -220,7 +220,6 @@ class SearchSpace():
         optimizer_type = random.choice(self.optimizers)
         learning_rate = random.uniform(self.learning_rates[0], self.learning_rates[1])
         batch_size = random.choice(self.batch_sizes) 
-        random_seed = random.choice(self.random_seeds)
 
         return {
             "hidden_layers": hidden_layers,
@@ -229,7 +228,6 @@ class SearchSpace():
             "optimizer_type": optimizer_type,
             "learning_rate": learning_rate,
             "batch_size": batch_size,
-            "random_seed": random_seed
         }
 
     def create_model(self, architecture):
@@ -240,8 +238,7 @@ class SearchSpace():
         learning_rate = architecture["learning_rate"]
         self.batch_size = architecture["batch_size"]  # extract the batch size for dataloader
 
-        # Set the seed before creating the model
-        # set_seed(seed=random_seed)
+
         # Create model
         model = DynamicNN(self.input_size, self.output_size, 
                           hidden_layers, activation_fn, 
@@ -380,7 +377,29 @@ class Generation():
         architectures_df['batch_size'] = batch_sizes
 
         df = pd.DataFrame(architectures_df)
-        return df
+        return df.sort_values('val_acc', ascending=False).reset_index(drop=True)
+
+    def run_generation(self,
+                       X_train, y_train, X_val, y_val,
+                       percentile_drop=25):
+    
+        # Generation is trained, and dropped
+        self.train_generation(X_train, y_train, num_epochs=1)
+        self.validate_generation(X_val, y_val)
+        self.get_worst_individuals(percentile_drop)
+        self.drop_worst_individuals()
+
+        return self.generation
+    
+    def run_ebe(self, n_epochs,
+                X_train, y_train, X_val, y_val,
+                percentile_drop=25):
+        
+        for n_epoch in range(n_epochs):
+            print(f"Epoch {n_epoch+1}/{n_epochs}")
+            self.generation = self.run_generation(X_train, y_train, X_val, y_val, percentile_drop=percentile_drop)
+            self.num_models = len(self.generation)
+            percentile_drop += 5
 
 
 # region Functions
@@ -396,17 +415,6 @@ def create_dataloaders(X, y,
     else: 
         return dataset
 
-def run_generation(generation, 
-                   X_train, y_train, X_val, y_val,
-                   num_epochs=1,
-                   percentile_drop=25):
-    
-    # Generation is trained, and dropped
-    generation.train_generation(X_train, y_train, num_epochs=num_epochs)
-    generation.validate_generation(X_val, y_val)
-    generation.get_worst_individuals(percentile_drop)
-    generation.drop_worst_individuals()
 
-    return generation
 
 #endregion
