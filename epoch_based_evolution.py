@@ -415,6 +415,69 @@ def create_dataloaders(X, y,
     else: 
         return dataset
 
+import ast
 
+def train_n_models(n_models, architectures_df, input_size, output_size,
+                   X_train, y_train, X_val, y_val):
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    N_MODELS = n_models
+    best_models = architectures_df.head(N_MODELS).reset_index(drop=True)
+
+    reborn_models = {}
+    results = []
+    for index, model in best_models.iterrows(): 
+        print('--Testing model:', index + 1, '/', N_MODELS)
+        # Extract attributes
+        hidden_layers = ast.literal_eval(model['hidden_layers'])
+        activation_fn_str = model['activation_fn'].split("'")[1].split('.')[-1]
+        if activation_fn_str == 'Sigmoid':
+            activation_fn = nn.Sigmoid
+        elif activation_fn_str == 'ReLU':
+            activation_fn = nn.ReLU
+        elif activation_fn_str == 'Tanh':
+            activation_fn = nn.Tanh
+        elif activation_fn_str == 'LeakyReLU':
+            activation_fn = nn.LeakyReLU
+
+        dropout_rate = model['dropout_rate']
+        lr = model['learning_rate']
+        batch_size = model['batch_size']
+        optimizer_str = model['optimizer_type'].split("'")[1].split('.')[-1]
+        if optimizer_str == 'Adam':
+            optimizer_type = optim.Adam
+        elif optimizer_str == 'SGD':
+            optimizer_type = optim.SGD
+
+        # Architectures are reborn
+        reborn_models[index] = DynamicNN(input_size, output_size, 
+                    hidden_layers, 
+                    activation_fn, dropout_rate,
+                    lr, optimizer_type).to(device)
+        
+        train_loader = create_dataloaders(X=X_train, y=y_train, batch_size=batch_size)
+        val_loader = create_dataloaders(X=X_val, y=y_val, batch_size=batch_size)
+        
+        # Training time
+        train_loss, train_acc, val_loss, val_acc = reborn_models[index].es_train(train_loader, val_loader, es_patience=50, verbose=True, max_epochs=1000)
+                # Append results
+        results.append({
+            'index': index,
+            'train_loss': train_loss,
+            'train_acc': train_acc,
+            'val_loss': val_loss,
+            'val_acc': val_acc,
+            'hidden_layers': hidden_layers,
+            'activation_fn': activation_fn.__class__.__name__,
+            'dropout_rate': dropout_rate,
+            'learning_rate': lr,
+            'batch_size': batch_size,
+            'optimizer_type': optimizer_type.__name__,
+        })
+    # Convert to DataFrame
+    results_df = pd.DataFrame(results)
+
+    return results_df
 
 #endregion
