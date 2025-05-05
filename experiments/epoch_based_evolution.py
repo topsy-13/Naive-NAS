@@ -611,8 +611,12 @@ import ast
 
 #     return results_df
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import ast
 
-def create_model_from_row(row, input_size, output_size, device=None):
+def create_model_from_row(row, input_size, output_size):
     import ast
     import torch.nn as nn
     import torch.optim as optim
@@ -660,6 +664,8 @@ def create_model_from_row(row, input_size, output_size, device=None):
     lr_scheduler = row.get('lr_scheduler', 'none')
     scheduler_params = row.get('scheduler_params', {})
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     # Instantiate the model
     model = DynamicNN(
         input_size=input_size,
@@ -676,9 +682,7 @@ def create_model_from_row(row, input_size, output_size, device=None):
         lr_scheduler=lr_scheduler,
         scheduler_params=scheduler_params,
         device=device
-    )
+    ).to(device)
 
     return model
-
-
 #endregion
