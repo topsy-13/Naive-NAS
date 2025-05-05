@@ -4,6 +4,7 @@ import torch.optim as optim
 
 import random
 import numpy as np
+import math
 
 import load_data
 import gc
@@ -23,36 +24,106 @@ def set_seed(seed=13):
 
 
 # Definir una arquitectura de red flexible 
-class DynamicNN(nn.Module): # MLP
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+class DynamicNN(nn.Module):  # MLP
     def __init__(self, input_size, output_size, 
                  hidden_layers, 
                  activation_fn, dropout_rate,
                  lr, optimizer_type, 
-                 device=None 
-                 ):
+                 weight_decay=0, momentum=None,
+                 use_skip_connections=False,
+                 initializer='xavier_uniform', lr_scheduler='none',
+                 scheduler_params={},
+                 device=None):
         super(DynamicNN, self).__init__()
 
         self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.use_skip_connections = use_skip_connections
+        
         layers = []
         prev_size = input_size
 
-        # Crear capas ocultas dinámicamente
         for size in hidden_layers:
-            layers.append(nn.Linear(prev_size, size))
+            layer = nn.Linear(prev_size, size)
+
+            # Apply initializer
+            if initializer == 'xavier_uniform':
+                nn.init.xavier_uniform_(layer.weight)
+            elif initializer == 'xavier_normal':
+                nn.init.xavier_normal_(layer.weight)
+            elif initializer == 'kaiming_uniform':
+                nn.init.kaiming_uniform_(layer.weight)
+            elif initializer == 'kaiming_normal':
+                nn.init.kaiming_normal_(layer.weight)
+
+            layers.append(layer)
             layers.append(activation_fn())
             if dropout_rate > 0:
                 layers.append(nn.Dropout(dropout_rate))
             prev_size = size
-        
-        # Capa de salida
-        layers.append(nn.Linear(prev_size, output_size))
 
+        layers.append(nn.Linear(prev_size, output_size))
         self.network = nn.Sequential(*layers)
-        self.optimizer = optimizer_type(self.parameters(), lr=lr)
+
+        # Configure optimizer
+        optimizer_kwargs = {'lr': lr}
+        if weight_decay > 0:
+            optimizer_kwargs['weight_decay'] = weight_decay
+        if momentum is not None and optimizer_type == optim.SGD:
+            optimizer_kwargs['momentum'] = momentum
+
+        self.optimizer = optimizer_type(self.parameters(), **optimizer_kwargs)
+
+        # Scheduler
+        if lr_scheduler == 'step':
+            self.scheduler = optim.lr_scheduler.StepLR(
+                self.optimizer,
+                step_size=scheduler_params.get('step_size', 10),
+                gamma=scheduler_params.get('gamma', 0.1)
+            )
+        elif lr_scheduler == 'exponential':
+            self.scheduler = optim.lr_scheduler.ExponentialLR(
+                self.optimizer,
+                gamma=scheduler_params.get('gamma', 0.9)
+            )
+        elif lr_scheduler == 'cosine':
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=scheduler_params.get('T_max', 10)
+            )
+        else:
+            self.scheduler = None
+
         self.criterion = nn.CrossEntropyLoss()
 
     def forward(self, x):
-        return self.network(x)
+        if not self.use_skip_connections:
+            return self.network(x)
+
+        result = x
+        idx = 0
+
+        for module in self.network:
+            if isinstance(module, nn.Linear) and idx > 0:
+                output = module(result)
+                if result.shape == output.shape:
+                    result = output + result
+                else:
+                    result = output
+            else:
+                result = module(result)
+            idx += 1
+
+        return result
+
+        
+    def step_scheduler(self):
+        if self.scheduler is not None:
+            self.scheduler.step()
+
 
     def oe_train(self, train_loader, num_epochs=1):
         self.train()
@@ -183,13 +254,20 @@ class DynamicNN(nn.Module): # MLP
 
 # region Search Space
 class SearchSpace():
+    
     def __init__(self, input_size, output_size, 
                  min_layers=2, max_layers=7, 
-                 min_neurons=16, max_neurons=1024,
-                 activation_fns=[nn.ReLU, nn.LeakyReLU, nn.Sigmoid],
-                 dropout_rates=[0, 0.1, 0.2, 0.5],
+                 min_neurons=13, max_neurons=512,
+                 activation_fns=[nn.ReLU, nn.LeakyReLU, nn.Sigmoid, nn.Tanh, nn.ELU, nn.GELU],
+                 dropout_rates=[0, 0.1, 0.2, 0.3, 0.4, 0.5],
                  min_learning_rate=0.0001, max_learning_rate=0.1,
-                 min_batch_size=32, max_batch_size=1024):
+                 min_batch_size=32, max_batch_size=1024,
+                 weight_decays=[0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2],
+                 momentum_values=[0.8, 0.9, 0.95, 0.99],
+                 layer_norm_options=[True, False],
+                 skip_connection_options=[True, False],
+                 initializers=['xavier_uniform', 'xavier_normal', 'kaiming_uniform', 'kaiming_normal'],
+                 lr_schedulers=['step', 'exponential', 'cosine', 'none']):
         
         self.input_size = input_size
         self.output_size = output_size
@@ -198,11 +276,19 @@ class SearchSpace():
         self.layers = [min_layers, max_layers]
         self.neurons = [min_neurons, max_neurons]
         self.activation_fns = activation_fns
-        self.learning_rates = [min_learning_rate, max_learning_rate]
-        self.dropout_rates = dropout_rates
-        self.optimizers = [optim.Adam, optim.SGD]
-
         
+        # Store log bounds for learning rate
+        self.log_min_lr = math.log10(min_learning_rate)
+        self.log_max_lr = math.log10(max_learning_rate)
+        
+        self.dropout_rates = dropout_rates
+        self.optimizers = [optim.Adam, optim.SGD, optim.RMSprop, optim.AdamW]
+        self.weight_decays = weight_decays
+        self.momentum_values = momentum_values
+        self.layer_norm_options = layer_norm_options
+        self.skip_connection_options = skip_connection_options
+        self.initializers = initializers
+        self.lr_schedulers = lr_schedulers
 
         # Build batch sizes considering powers of 2
         power = 1
@@ -219,16 +305,45 @@ class SearchSpace():
         activation_fn = random.choice(self.activation_fns)
         dropout_rate = random.choice(self.dropout_rates)
         optimizer_type = random.choice(self.optimizers)
-        learning_rate = random.uniform(self.learning_rates[0], self.learning_rates[1])
-        batch_size = random.choice(self.batch_sizes) 
-
+        
+        # Sample learning rate on a logarithmic scale
+        log_lr = random.uniform(self.log_min_lr, self.log_max_lr)
+        learning_rate = 10 ** log_lr
+        
+        # Sample weight decay on logarithmic scale if it's not zero
+        weight_decay = random.choice(self.weight_decays)
+        momentum = random.choice(self.momentum_values) if optimizer_type in [optim.SGD] else None
+        
+        # Sample other parameters
+        batch_size = random.choice(self.batch_sizes)
+        use_layer_norm = random.choice(self.layer_norm_options)
+        use_skip_connections = random.choice(self.skip_connection_options)
+        initializer = random.choice(self.initializers)
+        lr_scheduler = random.choice(self.lr_schedulers)
+        
+        # Sample hyperparameters specific to schedulers
+        scheduler_params = {}
+        if lr_scheduler == 'step':
+            scheduler_params['step_size'] = random.choice([5, 10, 20, 30])
+            scheduler_params['gamma'] = random.choice([0.1, 0.5, 0.9])
+        elif lr_scheduler == 'exponential':
+            scheduler_params['gamma'] = random.choice([0.9, 0.95, 0.99])
+        elif lr_scheduler == 'cosine':
+            scheduler_params['T_max'] = random.choice([10, 50, 100])
+        
         return {
-            "hidden_layers": hidden_layers,
-            "activation_fn": activation_fn,
-            "dropout_rate": dropout_rate,
-            "optimizer_type": optimizer_type,
-            "learning_rate": learning_rate,
-            "batch_size": batch_size,
+            'hidden_layers': hidden_layers,
+            'activation_fn': activation_fn,
+            'dropout_rate': dropout_rate,
+            'optimizer_type': optimizer_type,
+            'learning_rate': learning_rate,
+            'weight_decay': weight_decay,
+            'momentum': momentum,
+            'batch_size': batch_size,
+            'use_skip_connections': use_skip_connections,
+            'initializer': initializer,
+            'lr_scheduler': lr_scheduler,
+            'scheduler_params': scheduler_params
         }
 
     def create_model(self, architecture):
@@ -238,14 +353,29 @@ class SearchSpace():
         optimizer_type = architecture["optimizer_type"]
         learning_rate = architecture["learning_rate"]
         self.batch_size = architecture["batch_size"]  # extract the batch size for dataloader
-
-
-        # Create model
-        model = DynamicNN(self.input_size, self.output_size, 
-                          hidden_layers, activation_fn, 
-                          dropout_rate, learning_rate, optimizer_type
-                          ).to(self.device)
-
+        
+        # Extract new parameters with defaults if not present (for backward compatibility)
+        weight_decay = architecture.get("weight_decay", 0)
+        momentum = architecture.get("momentum", None)
+        use_skip_connections = architecture.get("use_skip_connections", False)
+        initializer = architecture.get("initializer", "xavier_uniform")
+        lr_scheduler = architecture.get("lr_scheduler", "none")
+        scheduler_params = architecture.get("scheduler_params", {})
+        
+        # Create model with all parameters
+        model = DynamicNN(
+            self.input_size, self.output_size, 
+            hidden_layers, activation_fn, 
+            dropout_rate, learning_rate, optimizer_type,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            use_skip_connections=use_skip_connections,
+            initializer=initializer,
+            lr_scheduler=lr_scheduler,
+            scheduler_params=scheduler_params,
+            device=self.device
+        ).to(self.device)
+        
         return model
     
 # endregion
