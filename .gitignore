@@ -2,4 +2,5 @@ experiments/lc_bench_results
 experiments/__pycache__
 experiments/api.py
 __pycache__
-epoch_based_evolution.py
+experiments/epoch_based_evolution.py
+thought.md
