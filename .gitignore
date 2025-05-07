@@ -1,6 +1,7 @@
 experiments/lc_bench_results
 experiments/__pycache__
 experiments/api.py
+experiments/lc_benchmarking.ipynb
 __pycache__
 experiments/epoch_based_evolution.py
 thought.md
