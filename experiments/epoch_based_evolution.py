@@ -12,22 +12,11 @@ import gc
 import pandas as pd
 import copy
 
-def set_seed(seed=13):
-    random.seed(seed)  # Python's built-in random module
-    np.random.seed(seed)  # NumPy
-    torch.manual_seed(seed)  # PyTorch CPU
-    torch.cuda.manual_seed(seed)  # PyTorch GPU (if available)
-    torch.cuda.manual_seed_all(seed)  # If using multi-GPU
-    torch.backends.cudnn.deterministic = True  # Ensures deterministic behavior
-    torch.backends.cudnn.benchmark = False  # Disables auto-optimization for conv layers (useful for exact reproducibility)
-    return
-
-
 # Definir una arquitectura de red flexible 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
+            
 class DynamicNN(nn.Module):  # MLP
     def __init__(self, input_size, output_size, 
                  hidden_layers, 
@@ -68,14 +57,24 @@ class DynamicNN(nn.Module):  # MLP
         layers.append(nn.Linear(prev_size, output_size))
         self.network = nn.Sequential(*layers)
 
+        # Get the optimizer class from string if needed
+        optimizer_class = self._get_optimizer_class(optimizer_type)
+
         # Configure optimizer
         optimizer_kwargs = {'lr': lr}
         if weight_decay > 0:
             optimizer_kwargs['weight_decay'] = weight_decay
-        if momentum is not None and optimizer_type == optim.SGD:
-            optimizer_kwargs['momentum'] = momentum
+        
+        # Handle momentum parameter
+        if momentum is not None:
+            # For SGD optimizer
+            if optimizer_class == optim.SGD:
+                optimizer_kwargs['momentum'] = momentum
+            # For RMSprop optimizer which also supports momentum
+            elif optimizer_class == optim.RMSprop:
+                optimizer_kwargs['momentum'] = momentum
 
-        self.optimizer = optimizer_type(self.parameters(), **optimizer_kwargs)
+        self.optimizer = optimizer_class(self.parameters(), **optimizer_kwargs)
 
         # Scheduler
         if lr_scheduler == 'step':
@@ -98,6 +97,68 @@ class DynamicNN(nn.Module):  # MLP
             self.scheduler = None
 
         self.criterion = nn.CrossEntropyLoss()
+    
+    def _get_optimizer_class(self, optimizer_type):
+        """
+        Convert optimizer_type to an actual optimizer class.
+        
+        Args:
+            optimizer_type: Can be:
+                - A direct reference to an optimizer class (e.g., optim.Adam)
+                - A string representation of a class (e.g., "<class 'torch.optim.rmsprop.RMSprop'>")
+                - A string name of an optimizer (e.g., "Adam", "SGD", "RMSprop")
+        
+        Returns:
+            The optimizer class
+        """
+        # If optimizer_type is already a class, return it
+        if isinstance(optimizer_type, type):
+            return optimizer_type
+        
+        # If optimizer_type is a string representation of a class like "<class 'torch.optim.rmsprop.RMSprop'>"
+        if isinstance(optimizer_type, str) and optimizer_type.startswith("<class '") and "'" in optimizer_type:
+            try:
+                # Extract the class path (handle both with and without closing bracket)
+                if optimizer_type.endswith("'>"):
+                    class_path = optimizer_type[8:-2]  # Remove "<class '" and "'>"
+                else:
+                    # Handle case where the closing bracket is missing
+                    class_path = optimizer_type[8:].split("'")[0]
+                
+                # Split the path into components
+                components = class_path.split('.')
+                
+                # Import the module and get the class
+                module_path = '.'.join(components[:-1])  # e.g., 'torch.optim.rmsprop'
+                class_name = components[-1]  # e.g., 'RMSprop'
+                
+                # Dynamically import the module
+                module = __import__(module_path, fromlist=[class_name])
+                
+                # Get the class from the module
+                return getattr(module, class_name)
+            
+            except (ImportError, AttributeError, ValueError) as e:
+                raise ValueError(f"Failed to parse optimizer class from '{optimizer_type}': {e}")
+        
+        # If optimizer_type is a simple string name of an optimizer
+        if isinstance(optimizer_type, str):
+            optimizer_map = {
+                'sgd': optim.SGD,
+                'adam': optim.Adam,
+                'adamw': optim.AdamW,
+                'rmsprop': optim.RMSprop,
+                'adagrad': optim.Adagrad,
+                'adadelta': optim.Adadelta
+            }
+            
+            optimizer_key = optimizer_type.lower()
+            if optimizer_key in optimizer_map:
+                return optimizer_map[optimizer_key]
+            
+            raise ValueError(f"Unknown optimizer: {optimizer_type}")
+        
+        raise TypeError(f"optimizer_type must be a class, class string, or name string, got {type(optimizer_type)}")
 
     def forward(self, x):
         if not self.use_skip_connections:
@@ -264,7 +325,7 @@ class SearchSpace():
                  min_batch_size=32, max_batch_size=1024,
                  weight_decays=[0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2],
                  momentum_values=[0.8, 0.9, 0.95, 0.99],
-                 layer_norm_options=[True, False],
+                 layer_norm_options=[True, False], # not considered
                  skip_connection_options=[True, False],
                  initializers=['xavier_uniform', 'xavier_normal', 'kaiming_uniform', 'kaiming_normal'],
                  lr_schedulers=['step', 'exponential', 'cosine', 'none']):
@@ -617,9 +678,6 @@ import torch.optim as optim
 import ast
 
 def create_model_from_row(row, input_size, output_size):
-    import ast
-    import torch.nn as nn
-    import torch.optim as optim
 
     # Hidden layers
     hidden_layers = row.get('hidden_layers', [128, 64])
